@@ -98,29 +98,17 @@ def get_nba(mise: float = 10.0):
     try:
         headers = {'Authorization': BALLDONTLIE_API_KEY}
         today = date.today().isoformat()
-        res = requests.get(f'{NBA_API_URL}/games?dates[]={today}&per_page=15&season=2024', headers=headers)
-        if res.status_code != 200: return {'erreur':f'Erreur API NBA : {res.status_code}'}
+        res = requests.get(f'{NBA_API_URL}/games?dates[]={today}&per_page=15', headers=headers)
+        if res.status_code != 200: return {'erreur':f'Erreur API NBA : {res.status_code} {res.text[:100]}'}
         games = res.json().get('data',[])
-        res2 = requests.get(f'{NBA_API_URL}/standings?season=2024', headers=headers)
-        standings = {}
-        if res2.status_code == 200:
-            for s in res2.json().get('data',[]):
-                nom = s['team']['full_name']
-                standings[nom] = {'wins':s['wins'],'losses':s['losses'],'rank':s.get('conference_rank',0)}
         matchs_analyses = []
         for g in games:
             team1 = g['home_team']['full_name']
             team2 = g['visitor_team']['full_name']
             date_match = g['date'][:10]
-            stats1 = standings.get(team1,{})
-            stats2 = standings.get(team2,{})
-            bilan1 = f"{stats1.get('wins',0)}-{stats1.get('losses',0)}" if stats1 else ''
-            bilan2 = f"{stats2.get('wins',0)}-{stats2.get('losses',0)}" if stats2 else ''
-            analyse = MatchAnalysis(sport='nba',team1=team1,team2=team2,competition='NBA',record1=bilan1,record2=bilan2)
+            analyse = MatchAnalysis(sport='nba',team1=team1,team2=team2,competition='NBA')
             d = analyse.to_dict()
             d['date'] = date_match
-            if stats1: d['stats1'] = {'wins':stats1['wins'],'losses':stats1['losses'],'rank':stats1['rank']}
-            if stats2: d['stats2'] = {'wins':stats2['wins'],'losses':stats2['losses'],'rank':stats2['rank']}
             matchs_analyses.append(d)
         if not matchs_analyses: return {'sport':'nba','matchs':[],'combines':{},'message':f'Aucun match NBA le {today}'}
         return {'sport':'nba','matchs':matchs_analyses,'combines':generer_combines(matchs_analyses,mise)}
