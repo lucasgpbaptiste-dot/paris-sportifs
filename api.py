@@ -11,10 +11,42 @@ app.add_middleware(CORSMiddleware, allow_origins=['*'], allow_methods=['*'], all
 
 FOOTBALL_API_KEY    = os.environ.get('FOOTBALL_API_KEY', '')
 BALLDONTLIE_API_KEY = os.environ.get('BALLDONTLIE_API_KEY', '')
+ANTHROPIC_API_KEY   = os.environ.get('ANTHROPIC_API_KEY', '')
 FOOTBALL_API_URL    = 'https://api.football-data.org/v4'
 NBA_API_URL         = 'https://api.balldontlie.io/v1'
+ANTHROPIC_URL       = 'https://api.anthropic.com/v1/messages'
 
 COMPETITIONS = {'ligue1':'FL1','premier':'PL','laliga':'PD','seriea':'SA','bundesliga':'BL1'}
+
+def analyser_match_ia(team1, team2, sport, competition, record1='', record2='', confidence=50):
+    if not ANTHROPIC_API_KEY: return None
+    try:
+        prompt = f'Tu es un expert en paris sportifs. Analyse ce match en 3 points courts:\n'
+        prompt += f'Match : {team1} vs {team2}\n'
+        prompt += f'Sport : {sport} - {competition}\n'
+        prompt += f'Bilan {team1} : {record1}\n'
+        prompt += f'Bilan {team2} : {record2}\n'
+        prompt += f'Score de confiance : {confidence}%\n\n'
+        prompt += 'Reponds avec exactement ce format:\n'
+        prompt += 'PRONOSTIC: [equipe favorite ou Equilibre]\n'
+        prompt += 'RISQUE: [Faible / Moyen / Eleve]\n'
+        prompt += 'CONSEIL: [1 phrase de conseil clair]'
+        r = requests.post(ANTHROPIC_URL,
+            headers={'x-api-key':ANTHROPIC_API_KEY,'anthropic-version':'2023-06-01','content-type':'application/json'},
+            json={'model':'claude-haiku-4-5-20251001','max_tokens':150,'messages':[{'role':'user','content':prompt}]},
+            timeout=10)
+        if r.status_code == 200:
+            texte = r.json()['content'][0]['text']
+            lignes = texte.strip().split('\n')
+            result = {}
+            for ligne in lignes:
+                if ligne.startswith('PRONOSTIC:'): result['pronostic'] = ligne.replace('PRONOSTIC:','').strip()
+                elif ligne.startswith('RISQUE:'): result['risque'] = ligne.replace('RISQUE:','').strip()
+                elif ligne.startswith('CONSEIL:'): result['conseil'] = ligne.replace('CONSEIL:','').strip()
+            return result
+        return None
+    except Exception:
+        return None
 
 def get_classement(code):
     try:
@@ -87,6 +119,8 @@ def get_matchs_reels(competition: str, mise: float = 10.0):
             d['date'] = date_match
             if stats1: d['stats1'] = {'position':stats1['position'],'points':stats1['points'],'buts_pour':stats1['buts_pour']}
             if stats2: d['stats2'] = {'position':stats2['position'],'points':stats2['points'],'buts_pour':stats2['buts_pour']}
+            ia = analyser_match_ia(team1,team2,'foot',m.get('competition',{}).get('name',competition),bilan1,bilan2,d['confidence'])
+            if ia: d['ia'] = ia
             matchs_analyses.append(d)
         return {'competition':competition,'matchs':matchs_analyses,'combines':generer_combines(matchs_analyses,mise)}
     except Exception as e:
@@ -99,7 +133,7 @@ def get_nba(mise: float = 10.0):
         headers = {'Authorization': BALLDONTLIE_API_KEY}
         today = date.today().isoformat()
         res = requests.get(f'{NBA_API_URL}/games?dates[]={today}&per_page=15', headers=headers)
-        if res.status_code != 200: return {'erreur':f'Erreur API NBA : {res.status_code} {res.text[:100]}'}
+        if res.status_code != 200: return {'erreur':f'Erreur API NBA : {res.status_code}'}
         games = res.json().get('data',[])
         matchs_analyses = []
         for g in games:
@@ -109,6 +143,8 @@ def get_nba(mise: float = 10.0):
             analyse = MatchAnalysis(sport='nba',team1=team1,team2=team2,competition='NBA')
             d = analyse.to_dict()
             d['date'] = date_match
+            ia = analyser_match_ia(team1,team2,'nba','NBA','','',d['confidence'])
+            if ia: d['ia'] = ia
             matchs_analyses.append(d)
         if not matchs_analyses: return {'sport':'nba','matchs':[],'combines':{},'message':f'Aucun match NBA le {today}'}
         return {'sport':'nba','matchs':matchs_analyses,'combines':generer_combines(matchs_analyses,mise)}
