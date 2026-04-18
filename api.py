@@ -1,6 +1,5 @@
 # -*- coding: utf-8 -*-
-import os
-import requests
+import os, requests, json
 from datetime import date
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
@@ -18,33 +17,73 @@ ANTHROPIC_URL       = 'https://api.anthropic.com/v1/messages'
 
 COMPETITIONS = {'ligue1':'FL1','premier':'PL','laliga':'PD','seriea':'SA','bundesliga':'BL1'}
 
-def analyser_match_ia(team1, team2, sport, competition, record1='', record2='', confidence=50):
+def appel_claude(prompt, max_tokens=300):
     if not ANTHROPIC_API_KEY: return None
     try:
-        prompt = f'Tu es un expert en paris sportifs. Analyse ce match en 3 points courts:\n'
-        prompt += f'Match : {team1} vs {team2}\n'
-        prompt += f'Sport : {sport} - {competition}\n'
-        prompt += f'Bilan {team1} : {record1}\n'
-        prompt += f'Bilan {team2} : {record2}\n'
-        prompt += f'Score de confiance : {confidence}%\n\n'
-        prompt += 'Reponds avec exactement ce format:\n'
-        prompt += 'PRONOSTIC: [equipe favorite ou Equilibre]\n'
-        prompt += 'RISQUE: [Faible / Moyen / Eleve]\n'
-        prompt += 'CONSEIL: [1 phrase de conseil clair]'
         r = requests.post(ANTHROPIC_URL,
             headers={'x-api-key':ANTHROPIC_API_KEY,'anthropic-version':'2023-06-01','content-type':'application/json'},
-            json={'model':'claude-haiku-4-5-20251001','max_tokens':150,'messages':[{'role':'user','content':prompt}]},
-            timeout=10)
+            json={'model':'claude-haiku-4-5-20251001','max_tokens':max_tokens,'messages':[{'role':'user','content':prompt}]},
+            timeout=15)
         if r.status_code == 200:
-            texte = r.json()['content'][0]['text']
-            lignes = texte.strip().split('\n')
-            result = {}
-            for ligne in lignes:
-                if ligne.startswith('PRONOSTIC:'): result['pronostic'] = ligne.replace('PRONOSTIC:','').strip()
-                elif ligne.startswith('RISQUE:'): result['risque'] = ligne.replace('RISQUE:','').strip()
-                elif ligne.startswith('CONSEIL:'): result['conseil'] = ligne.replace('CONSEIL:','').strip()
-            return result
+            return r.json()['content'][0]['text']
         return None
+    except Exception:
+        return None
+
+def analyser_match_ia(team1, team2, sport, competition, record1='', record2='', confidence=50):
+    prompt = f'Tu es un expert en paris sportifs. Analyse ce match en 3 points courts:\n'
+    prompt += f'Match : {team1} vs {team2}\n'
+    prompt += f'Sport : {sport} - {competition}\n'
+    prompt += f'Bilan {team1} : {record1}\n'
+    prompt += f'Bilan {team2} : {record2}\n'
+    prompt += f'Score de confiance : {confidence}%\n\n'
+    prompt += 'Reponds avec exactement ce format:\n'
+    prompt += 'PRONOSTIC: [equipe favorite ou Equilibre]\n'
+    prompt += 'RISQUE: [Faible / Moyen / Eleve]\n'
+    prompt += 'CONSEIL: [1 phrase de conseil clair]'
+    texte = appel_claude(prompt, 150)
+    if not texte: return None
+    lignes = texte.strip().split('\n')
+    result = {}
+    for ligne in lignes:
+        if ligne.startswith('PRONOSTIC:'): result['pronostic'] = ligne.replace('PRONOSTIC:','').strip()
+        elif ligne.startswith('RISQUE:'): result['risque'] = ligne.replace('RISQUE:','').strip()
+        elif ligne.startswith('CONSEIL:'): result['conseil'] = ligne.replace('CONSEIL:','').strip()
+    return result if result else None
+
+def get_joueurs_nba(team1, team2):
+    prompt = f'Pour le match NBA : {team1} vs {team2} (saison 2024-2025)\n'
+    prompt += 'Reponds UNIQUEMENT avec ce JSON exact, sans texte avant ou apres:\n'
+    prompt += '{\n'
+    prompt += '  "scoreur1": {"nom": "Prenom Nom", "equipe": "nom court", "points_moy": 0.0, "probabilite": "Eleve"},\n'
+    prompt += '  "scoreur2": {"nom": "Prenom Nom", "equipe": "nom court", "points_moy": 0.0, "probabilite": "Moyen"},\n'
+    prompt += '  "rebondeur": {"nom": "Prenom Nom", "equipe": "nom court", "rebonds_moy": 0.0},\n'
+    prompt += '  "passeur": {"nom": "Prenom Nom", "equipe": "nom court", "passes_moy": 0.0}\n'
+    prompt += '}'
+    texte = appel_claude(prompt, 350)
+    if not texte: return None
+    try:
+        start = texte.find('{')
+        end = texte.rfind('}') + 1
+        return json.loads(texte[start:end])
+    except Exception:
+        return None
+
+def get_joueurs_foot(team1, team2, competition):
+    prompt = f'Pour le match de foot : {team1} vs {team2} ({competition}, saison 2024-2025)\n'
+    prompt += 'Reponds UNIQUEMENT avec ce JSON exact, sans texte avant ou apres:\n'
+    prompt += '{\n'
+    prompt += '  "buteur1": {"nom": "Prenom Nom", "equipe": "nom court", "buts": 0, "probabilite": "Eleve"},\n'
+    prompt += '  "buteur2": {"nom": "Prenom Nom", "equipe": "nom court", "buts": 0, "probabilite": "Moyen"},\n'
+    prompt += '  "passeur": {"nom": "Prenom Nom", "equipe": "nom court", "passes": 0},\n'
+    prompt += '  "danger": {"nom": "Prenom Nom", "equipe": "nom court", "raison": "1 phrase courte"}\n'
+    prompt += '}'
+    texte = appel_claude(prompt, 350)
+    if not texte: return None
+    try:
+        start = texte.find('{')
+        end = texte.rfind('}') + 1
+        return json.loads(texte[start:end])
     except Exception:
         return None
 
@@ -110,17 +149,20 @@ def get_matchs_reels(competition: str, mise: float = 10.0):
             team1 = m['homeTeam']['name']
             team2 = m['awayTeam']['name']
             date_match = m['utcDate'][:10]
+            comp_name = m.get('competition',{}).get('name', competition)
             stats1 = classement.get(team1,{})
             stats2 = classement.get(team2,{})
             bilan1 = f"{stats1.get('gagnes',0)}-{stats1.get('perdus',0)}" if stats1 else ''
             bilan2 = f"{stats2.get('gagnes',0)}-{stats2.get('perdus',0)}" if stats2 else ''
-            analyse = MatchAnalysis(sport='foot',team1=team1,team2=team2,competition=m.get('competition',{}).get('name',competition),record1=bilan1,record2=bilan2)
+            analyse = MatchAnalysis(sport='foot',team1=team1,team2=team2,competition=comp_name,record1=bilan1,record2=bilan2)
             d = analyse.to_dict()
             d['date'] = date_match
             if stats1: d['stats1'] = {'position':stats1['position'],'points':stats1['points'],'buts_pour':stats1['buts_pour']}
             if stats2: d['stats2'] = {'position':stats2['position'],'points':stats2['points'],'buts_pour':stats2['buts_pour']}
-            ia = analyser_match_ia(team1,team2,'foot',m.get('competition',{}).get('name',competition),bilan1,bilan2,d['confidence'])
+            ia = analyser_match_ia(team1,team2,'foot',comp_name,bilan1,bilan2,d['confidence'])
             if ia: d['ia'] = ia
+            joueurs = get_joueurs_foot(team1,team2,comp_name)
+            if joueurs: d['joueurs'] = joueurs
             matchs_analyses.append(d)
         return {'competition':competition,'matchs':matchs_analyses,'combines':generer_combines(matchs_analyses,mise)}
     except Exception as e:
@@ -145,6 +187,8 @@ def get_nba(mise: float = 10.0):
             d['date'] = date_match
             ia = analyser_match_ia(team1,team2,'nba','NBA','','',d['confidence'])
             if ia: d['ia'] = ia
+            joueurs = get_joueurs_nba(team1,team2)
+            if joueurs: d['joueurs'] = joueurs
             matchs_analyses.append(d)
         if not matchs_analyses: return {'sport':'nba','matchs':[],'combines':{},'message':f'Aucun match NBA le {today}'}
         return {'sport':'nba','matchs':matchs_analyses,'combines':generer_combines(matchs_analyses,mise)}
