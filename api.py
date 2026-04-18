@@ -14,8 +14,10 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-FOOTBALL_API_KEY = os.environ.get("FOOTBALL_API_KEY", "")
-FOOTBALL_API_URL = "https://api.football-data.org/v4"
+FOOTBALL_API_KEY    = os.environ.get("FOOTBALL_API_KEY", "")
+BALLDONTLIE_API_KEY = os.environ.get("BALLDONTLIE_API_KEY", "")
+FOOTBALL_API_URL    = "https://api.football-data.org/v4"
+NBA_API_URL         = "https://api.balldontlie.io/v1"
 
 COMPETITIONS = {
     "ligue1":     "FL1",
@@ -38,117 +40,47 @@ def get_classement(code):
         for entry in total.get("table", []):
             nom = entry["team"]["name"]
             classement[nom] = {
-                "position":     entry["position"],
-                "points":       entry["points"],
-                "joues":        entry["playedGames"],
-                "gagnes":       entry["won"],
-                "perdus":       entry["lost"],
-                "nuls":         entry["draw"],
-                "buts_pour":    entry["goalsFor"],
-                "buts_contre":  entry["goalsAgainst"],
+                "position":    entry["position"],
+                "points":      entry["points"],
+                "joues":       entry["playedGames"],
+                "gagnes":      entry["won"],
+                "perdus":      entry["lost"],
+                "nuls":        entry["draw"],
+                "buts_pour":   entry["goalsFor"],
+                "buts_contre": entry["goalsAgainst"],
             }
         return classement
     except Exception:
         return {}
 
-def get_forme(team_id, headers):
-    try:
-        res = requests.get(f"{FOOTBALL_API_URL}/teams/{team_id}/matches?status=FINISHED&limit=5", headers=headers)
-        data = res.json()
-        matchs = data.get("matches", [])
-        forme = []
-        for m in matchs:
-            home = m["homeTeam"]["id"] == team_id
-            score_home = m["score"]["fullTime"]["home"] or 0
-            score_away = m["score"]["fullTime"]["away"] or 0
-            if home:
-                forme.append("V" if score_home > score_away else "D" if score_home < score_away else "N")
-            else:
-                forme.append("V" if score_away > score_home else "D" if score_away < score_home else "N")
-        return forme
-    except Exception:
-        return []
-
-def calculer_score_forme(forme):
-    if not forme:
-        return 50
-    points = {"V": 3, "N": 1, "D": 0}
-    total = sum(points.get(r, 0) for r in forme)
-    return round(total / (len(forme) * 3) * 100)
-
 def generer_combines(matchs_analyses, mise):
     combines = {}
-
-    # SAFE : matchs avec confiance >= 60, paris les plus surs
     safe = [m for m in matchs_analyses if m["confidence"] >= 60][:3]
     if len(safe) >= 2:
-        selections_safe = []
+        selections = []
         for m in safe:
-            pari = next((b for b in m["bets"] if b["id"] == "winner_1" and b["recommended"]),
-                       min(m["bets"], key=lambda b: b["cote"]))
-            selections_safe.append({
-                "match": m["team1"] + " vs " + m["team2"],
-                "label": pari["label"],
-                "cote":  pari["cote"],
-                "date":  m.get("date", ""),
-            })
-        cote_safe = round(eval("*".join([str(s["cote"]) for s in selections_safe])), 2)
-        combines["safe"] = {
-            "type": "safe",
-            "label": "Safe",
-            "description": "Paris prudents sur favoris clairs",
-            "selections": selections_safe,
-            "combined_cote": cote_safe,
-            "mise": mise,
-            "potential_gain": round(cote_safe * mise, 2),
-        }
+            pari = next((b for b in m["bets"] if b["recommended"]), min(m["bets"], key=lambda b: b["cote"]))
+            selections.append({"match": m["team1"] + " vs " + m["team2"], "label": pari["label"], "cote": pari["cote"], "date": m.get("date","")})
+        cote = round(eval("*".join([str(s["cote"]) for s in selections])), 2)
+        combines["safe"] = {"type":"safe","label":"Safe","description":"Paris prudents sur favoris clairs","selections":selections,"combined_cote":cote,"mise":mise,"potential_gain":round(cote*mise,2)}
 
-    # EQUILIBRE : matchs avec confiance entre 45-65, paris equilibres
     equilibre = [m for m in matchs_analyses if 40 <= m["confidence"] <= 70][:3]
     if len(equilibre) >= 2:
-        selections_eq = []
+        selections = []
         for m in equilibre:
-            pari = next((b for b in m["bets"] if b["recommended"]),
-                       m["bets"][2] if len(m["bets"]) > 2 else m["bets"][0])
-            selections_eq.append({
-                "match": m["team1"] + " vs " + m["team2"],
-                "label": pari["label"],
-                "cote":  pari["cote"],
-                "date":  m.get("date", ""),
-            })
-        cote_eq = round(eval("*".join([str(s["cote"]) for s in selections_eq])), 2)
-        combines["equilibre"] = {
-            "type": "equilibre",
-            "label": "Equilibre",
-            "description": "Bon rapport risque/gain",
-            "selections": selections_eq,
-            "combined_cote": cote_eq,
-            "mise": mise,
-            "potential_gain": round(cote_eq * mise, 2),
-        }
+            pari = next((b for b in m["bets"] if b["recommended"]), m["bets"][0])
+            selections.append({"match": m["team1"] + " vs " + m["team2"], "label": pari["label"], "cote": pari["cote"], "date": m.get("date","")})
+        cote = round(eval("*".join([str(s["cote"]) for s in selections])), 2)
+        combines["equilibre"] = {"type":"equilibre","label":"Equilibre","description":"Bon rapport risque/gain","selections":selections,"combined_cote":cote,"mise":mise,"potential_gain":round(cote*mise,2)}
 
-    # RISQUE : matchs avec bonnes cotes, paris audacieux
     risque = sorted(matchs_analyses, key=lambda m: max(b["cote"] for b in m["bets"]), reverse=True)[:3]
     if len(risque) >= 2:
-        selections_r = []
+        selections = []
         for m in risque:
             pari = max(m["bets"], key=lambda b: b["cote"])
-            selections_r.append({
-                "match": m["team1"] + " vs " + m["team2"],
-                "label": pari["label"],
-                "cote":  pari["cote"],
-                "date":  m.get("date", ""),
-            })
-        cote_r = round(eval("*".join([str(s["cote"]) for s in selections_r])), 2)
-        combines["risque"] = {
-            "type": "risque",
-            "label": "Risque",
-            "description": "Cotes elevees, gains maximaux",
-            "selections": selections_r,
-            "combined_cote": cote_r,
-            "mise": mise,
-            "potential_gain": round(cote_r * mise, 2),
-        }
+            selections.append({"match": m["team1"] + " vs " + m["team2"], "label": pari["label"], "cote": pari["cote"], "date": m.get("date","")})
+        cote = round(eval("*".join([str(s["cote"]) for s in selections])), 2)
+        combines["risque"] = {"type":"risque","label":"Risque","description":"Cotes elevees, gains maximaux","selections":selections,"combined_cote":cote,"mise":mise,"potential_gain":round(cote*mise,2)}
 
     return combines
 
@@ -162,14 +94,13 @@ def get_matchs_reels(competition: str, mise: float = 10.0):
         return {"erreur": "Cle API football manquante"}
     code = COMPETITIONS.get(competition.lower())
     if not code:
-        return {"erreur": f"Competition inconnue"}
+        return {"erreur": "Competition inconnue"}
     try:
         headers = {"X-Auth-Token": FOOTBALL_API_KEY}
         res = requests.get(f"{FOOTBALL_API_URL}/competitions/{code}/matches?status=SCHEDULED", headers=headers)
         data = res.json()
         matchs = data.get("matches", [])[:6]
         classement = get_classement(code)
-
         matchs_analyses = []
         for m in matchs:
             team1 = m["homeTeam"]["name"]
@@ -179,15 +110,9 @@ def get_matchs_reels(competition: str, mise: float = 10.0):
             stats2 = classement.get(team2, {})
             bilan1 = f"{stats1.get('gagnes',0)}-{stats1.get('perdus',0)}" if stats1 else ""
             bilan2 = f"{stats2.get('gagnes',0)}-{stats2.get('perdus',0)}" if stats2 else ""
-
-            analyse = MatchAnalysis(
-                sport="foot",
-                team1=team1,
-                team2=team2,
-                competition=m.get("competition", {}).get("name", competition),
-                record1=bilan1,
-                record2=bilan2,
-            )
+            analyse = MatchAnalysis(sport="foot", team1=team1, team2=team2,
+                competition=m.get("competition",{}).get("name", competition),
+                record1=bilan1, record2=bilan2)
             d = analyse.to_dict()
             d["date"] = date
             if stats1:
@@ -195,17 +120,65 @@ def get_matchs_reels(competition: str, mise: float = 10.0):
             if stats2:
                 d["stats2"] = {"position": stats2["position"], "points": stats2["points"], "buts_pour": stats2["buts_pour"]}
             matchs_analyses.append(d)
-
         combines = generer_combines(matchs_analyses, mise)
         return {"competition": competition, "matchs": matchs_analyses, "combines": combines}
+    except Exception as e:
+        return {"erreur": str(e)}
 
+@app.get("/nba")
+def get_nba(mise: float = 10.0):
+    if not BALLDONTLIE_API_KEY:
+        return {"erreur": "Cle API NBA manquante"}
+    try:
+        headers = {"Authorization": BALLDONTLIE_API_KEY}
+
+        # Matchs du jour
+        from datetime import date
+        today = date.today().isoformat()
+        res = requests.get(f"{NBA_API_URL}/games?dates[]={today}&per_page=10", headers=headers)
+        data = res.json()
+        games = data.get("data", [])
+
+        # Standings
+        res2 = requests.get(f"{NBA_API_URL}/standings?season=2024", headers=headers)
+        standings_data = res2.json()
+        standings = {}
+        for s in standings_data.get("data", []):
+            nom = s["team"]["full_name"]
+            standings[nom] = {
+                "wins":   s["wins"],
+                "losses": s["losses"],
+                "conference_rank": s.get("conference_rank", 0),
+            }
+
+        matchs_analyses = []
+        for g in games:
+            team1 = g["home_team"]["full_name"]
+            team2 = g["visitor_team"]["full_name"]
+            date_match = g["date"][:10]
+            stats1 = standings.get(team1, {})
+            stats2 = standings.get(team2, {})
+            bilan1 = f"{stats1.get('wins',0)}-{stats1.get('losses',0)}" if stats1 else ""
+            bilan2 = f"{stats2.get('wins',0)}-{stats2.get('losses',0)}" if stats2 else ""
+            analyse = MatchAnalysis(sport="nba", team1=team1, team2=team2,
+                competition="NBA", record1=bilan1, record2=bilan2)
+            d = analyse.to_dict()
+            d["date"] = date_match
+            if stats1:
+                d["stats1"] = {"wins": stats1["wins"], "losses": stats1["losses"], "rank": stats1["conference_rank"]}
+            if stats2:
+                d["stats2"] = {"wins": stats2["wins"], "losses": stats2["losses"], "rank": stats2["conference_rank"]}
+            matchs_analyses.append(d)
+
+        combines = generer_combines(matchs_analyses, mise)
+        return {"sport": "nba", "matchs": matchs_analyses, "combines": combines}
     except Exception as e:
         return {"erreur": str(e)}
 
 @app.get("/matchs/{sport}")
 def get_matchs(sport: str):
     if sport not in SAMPLE_MATCHES:
-        return {"erreur": f"Sport inconnu"}
+        return {"erreur": "Sport inconnu"}
     resultats = []
     for m in SAMPLE_MATCHES[sport]:
         analyse = MatchAnalysis(sport=sport, team1=m["team1"], team2=m["team2"],
@@ -217,7 +190,7 @@ def get_matchs(sport: str):
 @app.get("/ticket/{sport}")
 def get_ticket(sport: str, mise: float = 10.0):
     if sport not in SAMPLE_MATCHES:
-        return {"erreur": f"Sport inconnu"}
+        return {"erreur": "Sport inconnu"}
     ticket = BettingTicket()
     for m in SAMPLE_MATCHES[sport]:
         analyse = MatchAnalysis(sport=sport, team1=m["team1"], team2=m["team2"],
